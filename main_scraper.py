@@ -2,27 +2,59 @@ from scrapper.techcrunch import scrape_techcrunch
 from scrapper.verge import scrape_verge
 from scrapper.wired import scrape_wired
 import json
+import traceback
 
 def main():
-    all_news = []
-    techcrunch_articles = scrape_techcrunch()
-    verge_articles = scrape_verge()
-    wired_articles = scrape_wired()
+    try:
+        print("[DEBUG] Starting main scraper function")
 
-    print(f"TechCrunch articles: {len(techcrunch_articles)}")
-    print(f"Verge articles: {len(verge_articles)}")
-    print(f"Wired articles: {len(wired_articles)}")
+        all_news = []
 
-    all_news.extend(techcrunch_articles)
-    all_news.extend(verge_articles)
-    all_news.extend(wired_articles)
+        # TechCrunch
+        try:
+            print("[DEBUG] Scraping TechCrunch...")
+            tc_articles = scrape_techcrunch() or []
+            print(f"[DEBUG] TechCrunch returned {len(tc_articles)} articles")
+            all_news.extend(tc_articles)
+        except Exception as e:
+            print(f"[ERROR] TechCrunch scraper failed: {e}")
 
-    print(f"✅ Total articles fetched: {len(all_news)}")
+        # The Verge
+        try:
+            print("[DEBUG] Scraping The Verge...")
+            verge_articles = scrape_verge() or []
+            print(f"[DEBUG] The Verge returned {len(verge_articles)} articles")
+            all_news.extend(verge_articles)
+        except Exception as e:
+            print(f"[ERROR] Verge scraper failed: {e}")
 
-    with open("all_news.json", "w") as f:
-        json.dump(all_news, f, indent=2)
+        # Wired
+        try:
+            print("[DEBUG] Scraping Wired...")
+            wired_articles = scrape_wired() or []
+            print(f"[DEBUG] Wired returned {len(wired_articles)} articles")
+            all_news.extend(wired_articles)
+        except Exception as e:
+            print(f"[ERROR] Wired scraper failed: {e}")
 
-    print("✅ Saved to all_news.json")
+        print(f"[SUCCESS] Total articles fetched: {len(all_news)}")
+
+        # ✅ Always return a list, even if empty
+        try:
+            with open("all_news.json", "w", encoding="utf-8") as f:
+                json.dump(all_news, f, indent=2, ensure_ascii=False)
+            print("[SUCCESS] Saved to all_news.json")
+        except Exception as e:
+            print(f"[ERROR] Failed to save JSON: {e}")
+
+        return all_news  # ✅ Always return list
+
+    except Exception as e:
+        print(f"[FATAL] Error in main(): {e}")
+        traceback.print_exc()
+        return []  # ✅ Never return None
+
 
 if __name__ == "__main__":
-    main()
+    result = main()
+    print(f"[FINAL] Scraper output: {len(result)} articles")
