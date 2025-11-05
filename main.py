@@ -1,13 +1,14 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from apscheduler.schedulers.background import BackgroundScheduler
-import json, os, time
 from datetime import datetime
-from main_scraper import main as scrape_all_sites  # import your main scrape function
+import os, time, json
+from supabase import create_client, Client
+from main_scraper import main as scrape_all_sites
 
+# --- Init FastAPI ---
 app = FastAPI(title="Tech News API")
 
-# --- CORS so Flutter can access the API ---
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -16,93 +17,68 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- Cache config ---
-CACHE_FILE = "news_cache.json"
-CACHE_TTL = 1800  # 30 minutes (in seconds)
+# --- Supabase setup ---
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# --- Helpers for loading/saving cache ---
+CACHE_TTL = 1800  # 30 min
+
+# --- Helpers ---
 def load_cache():
-    if os.path.exists(CACHE_FILE):
-        with open(CACHE_FILE, "r") as f:
-            return json.load(f)
+    try:
+        response = supabase.table("news_cache").select("*").order("updated_at", desc=True).limit(1).execute()
+        if response.data:
+            row = response.data[0]
+            age = time.time() - row["last_updated"]
+            print(f"[DB] Cache age: {int(age)} sec")
+            return row if age < CACHE_TTL else None
+    except Exception as e:
+        print(f"[ERROR] load_cache(): {e}")
     return None
 
 def save_cache(data):
-    with open(CACHE_FILE, "w") as f:
-        json.dump(data, f)
+    try:
+        supabase.table("news_cache").insert({
+            "data": data,
+            "last_updated": time.time(),
+            "updated_at": datetime.utcnow().isoformat()
+        }).execute()
+        print(f"[DB] Cache saved to Supabase ({len(data['articles'])} articles)")
+    except Exception as e:
+        print(f"[ERROR] save_cache(): {e}")
 
-# --- Main /news endpoint ---
+# --- API route ---
 @app.get("/news")
 def get_news():
-    try:
-        # Try to load from cache first
-        cache = load_cache()
-        if cache:
-            last_updated = cache.get("last_updated", 0)
-            age = time.time() - last_updated
+    cache = load_cache()
+    if cache:
+        print("[CACHE] Serving data from Supabase cache")
+        return cache["data"]
 
-            # Serve cached data if not older than 30 min
-            if age < CACHE_TTL:
-                print(f"[CACHE] Serving cached data (age: {int(age)} sec)")
-                return cache
+    print("[UPDATE] Cache expired — scraping fresh data...")
+    articles = scrape_all_sites()
+    data = {
+        "articles": articles,
+        "last_updated": time.time(),
+        "updated_at": datetime.utcnow().isoformat()
+    }
+    save_cache(data)
+    return data
 
-        # If no valid cache, scrape fresh data
-        print("[UPDATE] Cache expired or missing - scraping fresh data...")
-        
-        # Import the main function here to avoid circular imports
-        from main_scraper import main as scrape_all_sites
-        
-        # Set console encoding to UTF-8
-        import sys
-        import io
-        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
-        
-        # Scrape fresh data
-        articles = scrape_all_sites()
-        
-        if not isinstance(articles, list):
-            print(f"[ERROR] scrape_all_sites() returned {type(articles)} instead of a list")
-            if cache:
-                print("[WARN] Returning cached data as fallback")
-                return cache
-            return {"error": "Failed to fetch articles, please try again later"}
-
-        data = {
-            "articles": articles,
-            "last_updated": time.time(),
-            "updated_at": datetime.now().isoformat(),
-            "source": "fresh"
-        }
-
-        save_cache(data)
-        print(f"[SUCCESS] Cache updated with {len(articles)} articles")
-        return data
-        
-    except Exception as e:
-        print(f"[ERROR] Error in get_news: {str(e)}")
-        if cache:
-            print("[WARN] Returning cached data as fallback")
-            return cache
-        return {"error": f"An error occurred: {str(e)}"}
-
-
-# --- Background Scheduler ---
+# --- Background refresh every 30 min ---
 def background_refresh():
-    print("[BACKGROUND] Refreshing cache...")
-    try:
-        articles = scrape_all_sites()
-        data = {
-            "articles": articles,
-            "last_updated": time.time(),
-            "updated_at": datetime.now().isoformat()
-        }
-        save_cache(data)
-        print("[SUCCESS] Background cache refresh successful!")
-    except Exception as e:
-        print("[ERROR] Background job failed:", e)
+    print("[JOB] Refreshing cache...")
+    articles = scrape_all_sites()
+    data = {
+        "articles": articles,
+        "last_updated": time.time(),
+        "updated_at": datetime.utcnow().isoformat()
+    }
+    save_cache(data)
+    print("[JOB] Cache updated")
 
 scheduler = BackgroundScheduler()
 scheduler.add_job(background_refresh, "interval", minutes=30)
 scheduler.start()
-
-print("[INFO] Scheduler started - news will refresh every 30 minutes automatically.")
+print("[INFO] Scheduler started (Supabase version)")
